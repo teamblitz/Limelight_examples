@@ -1,0 +1,55 @@
+  private synchronized void maybeUpdateGoalFromVision(double timestamp) {
+        if (mTurretMode != TurretControlModes.VISION_AIMED) {
+            mHasTarget = false;
+            mOnTarget = false;
+            mTurretFeedforwardV = 0.0;
+            mTrackId = -1;
+            mLatestAimingParameters = Optional.empty();
+            return;
+        }
+        boolean useHighTarget = mRobotState.useHighTarget();
+        mLatestAimingParameters = mRobotState.getAimingParameters(useHighTarget, -1, Constants.kMaxGoalTrackAge);
+        if (mLatestAimingParameters.isPresent()) {
+            mTrackId = mLatestAimingParameters.get().getTrackId();
+
+            final double kLookaheadTime = 0.7;
+            Pose2d robot_to_predicted_robot = mRobotState.getLatestFieldToVehicle().getValue().inverse()
+                    .transformBy(mRobotState.getPredictedFieldToVehicle(kLookaheadTime));
+            Pose2d predicted_robot_to_goal = robot_to_predicted_robot.inverse()
+                    .transformBy(mLatestAimingParameters.get().getRobotToGoal());
+            mCorrectedRangeToTarget = predicted_robot_to_goal.getTranslation().norm();
+
+            // Don't aim if not in min distance
+            if (mEnforceAutoAimMinDistance && mCorrectedRangeToTarget > mAutoAimMinDistance) {
+                return;
+            }
+
+            Rotation2d turret_error = mRobotState.getVehicleToTurret(timestamp).getRotation().inverse()
+                    .rotateBy(mLatestAimingParameters.get().getRobotToGoalRotation());
+            mGoal.state.turret = mCurrentState.turret + turret_error.getDegrees();
+            Twist2d velocity = mRobotState.getMeasuredVelocity();
+            // Angular velocity component from tangential robot motion about the goal.
+            double tangential_component = mLatestAimingParameters.get().getRobotToGoalRotation().sin() * velocity.dx / mLatestAimingParameters.get().getRange();
+            double angular_component = Units.radians_to_degrees(velocity.dtheta);
+            // Add (opposite) of tangential velocity about goal + angular velocity in local frame.
+            mTurretFeedforwardV = -(angular_component + tangential_component);
+
+            if (mGoal.state.turret < Constants.kTurretConstants.kMinUnitsLimit) {
+                mGoal.state.turret += 360.0;
+            }
+            if (mGoal.state.turret > Constants.kTurretConstants.kMaxUnitsLimit) {
+                mGoal.state.turret -= 360.0;
+            }
+
+            mHasTarget = true;
+
+            if (Util.epsilonEquals(turret_error.getDegrees(), 0.0, 3.0)) {
+                mOnTarget = true;
+            } else {
+                mOnTarget = false;
+            }
+        } else {
+            mHasTarget = false;
+            mOnTarget = false;
+        }
+    }
